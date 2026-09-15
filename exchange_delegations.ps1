@@ -79,7 +79,7 @@ finally {
 
 $session = $null
 try {
-    $session = New-PSSession -ConnectionUri $ConnectionUri -ConfigurationName Microsoft.Exchange -Authentication $AuthMethod -Credential $cred -SessionOption $sessionOption -ErrorAction Stop
+    $session = New-PSSession -ConnectionUri $ConnectionUri -ConfigurationName Microsoft.Exchange -Authentication $AuthMethod -Credential $cred -SessionOption $sessionOption -AllowRedirection -ErrorAction Stop
     Import-PSSession -Session $session -DisableNameChecking -AllowClobber -ErrorAction Stop | Out-Null
 
     # Uniquement les boites mails "utilisateur" (exclut salles,
