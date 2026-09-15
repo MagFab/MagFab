@@ -1,0 +1,124 @@
+# ============================================================
+# Recupere, pour chaque boite mail utilisateur Exchange, les
+# infos de base (nom, prenom, login, email) et les delegations
+# (Acces complet / Envoyer en tant que / Envoyer de la part de).
+#
+# Les identifiants sont lus sur l'entree standard, au format
+# JSON {"login": "...", "password": "..."} : ils ne transitent
+# jamais par les arguments du processus ni par une variable
+# d'environnement, pour ne pas apparaitre dans la liste des
+# processus ni dans les journaux.
+#
+# Une seule ligne JSON est ecrite sur la sortie standard :
+#   - en cas de succes : {"mailboxes": [...]}
+#   - en cas d'echec    : {"error": "..."}
+#
+# A adapter a votre configuration Exchange 2013 on-premise :
+#   - $ConnectionUri : http vs https selon la conf IIS du vdir PowerShell
+#   - $AuthMethod    : Kerberos (domaine, nom d'hote) / Negotiate (IP,
+#                      NTLM) / Basic (necessite HTTPS)
+# ============================================================
+
+$ErrorActionPreference = 'Stop'
+$WarningPreference = 'SilentlyContinue'
+
+$ExchangeServer = '10.4.17.234'
+$ConnectionUri = "http://$ExchangeServer/PowerShell/"
+$AuthMethod = 'Negotiate'
+
+function Write-JsonResult {
+    param($Object)
+    $Object | ConvertTo-Json -Depth 6 -Compress
+}
+
+# --- Lecture des identifiants sur stdin ---
+$cred = $null
+try {
+    $raw = [Console]::In.ReadToEnd()
+    $creds = $raw | ConvertFrom-Json
+    if (-not $creds.login -or -not $creds.password) {
+        Write-JsonResult @{ error = 'Identifiants manquants.' }
+        exit 1
+    }
+    $securePwd = ConvertTo-SecureString $creds.password -AsPlainText -Force
+    $cred = New-Object System.Management.Automation.PSCredential($creds.login, $securePwd)
+}
+catch {
+    Write-JsonResult @{ error = "Impossible de lire les identifiants : $($_.Exception.Message)" }
+    exit 1
+}
+finally {
+    Remove-Variable raw, creds, securePwd -ErrorAction SilentlyContinue
+}
+
+$session = $null
+try {
+    $session = New-PSSession -ConnectionUri $ConnectionUri -Authentication $AuthMethod -Credential $cred -ErrorAction Stop
+    Import-PSSession -Session $session -DisableNameChecking -AllowClobber -ErrorAction Stop | Out-Null
+
+    # Uniquement les boites mails "utilisateur" (exclut salles,
+    # equipements, boites partagees, boites de decouverte, etc.)
+    $mailboxes = Get-Mailbox -ResultSize Unlimited -Filter { RecipientTypeDetails -eq 'UserMailbox' }
+
+    $resultats = foreach ($mbx in $mailboxes) {
+
+        $user = $null
+        try { $user = Get-User -Identity $mbx.Identity -ErrorAction Stop } catch {}
+
+        # --- Acces complet (Full Access) ---
+        $accesComplet = @()
+        try {
+            $accesComplet = Get-MailboxPermission -Identity $mbx.Identity -ErrorAction Stop |
+                Where-Object {
+                    -not $_.IsInherited -and
+                    $_.Deny -eq $false -and
+                    $_.AccessRights -contains 'FullAccess' -and
+                    $_.User.ToString() -notlike 'NT AUTHORITY\SELF'
+                } |
+                ForEach-Object { $_.User.ToString() }
+        } catch {}
+
+        # --- Envoyer en tant que (Send As) ---
+        $envoyerEnTantQue = @()
+        try {
+            $envoyerEnTantQue = Get-RecipientPermission -Identity $mbx.Identity -ErrorAction Stop |
+                Where-Object {
+                    $_.AccessControlType -eq 'Allow' -and
+                    $_.Trustee.ToString() -notlike 'NT AUTHORITY\SELF'
+                } |
+                ForEach-Object { $_.Trustee.ToString() }
+        } catch {}
+
+        # --- Envoyer de la part de (Send on Behalf) ---
+        $envoyerDeLaPartDe = @()
+        if ($mbx.GrantSendOnBehalfTo) {
+            foreach ($entry in $mbx.GrantSendOnBehalfTo) {
+                try {
+                    $envoyerDeLaPartDe += (Get-Recipient -Identity $entry.ToString() -ErrorAction Stop).DisplayName
+                } catch {
+                    $envoyerDeLaPartDe += $entry.ToString()
+                }
+            }
+        }
+
+        [PSCustomObject]@{
+            nom               = if ($user) { $user.LastName } else { '' }
+            prenom            = if ($user) { $user.FirstName } else { '' }
+            login             = if ($user) { $user.SamAccountName } else { $mbx.SamAccountName }
+            email             = $mbx.PrimarySmtpAddress.ToString()
+            accesComplet      = @($accesComplet)
+            envoyerEnTantQue  = @($envoyerEnTantQue)
+            envoyerDeLaPartDe = @($envoyerDeLaPartDe)
+        }
+    }
+
+    Write-JsonResult @{ mailboxes = @($resultats) }
+}
+catch {
+    Write-JsonResult @{ error = "Erreur Exchange : $($_.Exception.Message)" }
+    exit 1
+}
+finally {
+    if ($session) { Remove-PSSession -Session $session -ErrorAction SilentlyContinue }
+    if ($cred) { Remove-Variable cred -ErrorAction SilentlyContinue }
+}
