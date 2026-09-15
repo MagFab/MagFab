@@ -17,16 +17,16 @@ include 'sommaire.php';
 header('Cache-Control: no-store, no-cache, must-revalidate');
 header('Pragma: no-cache');
 
-$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-    || (($_SERVER['SERVER_PORT'] ?? null) == 443);
+// Intranet accessible uniquement en HTTP sur le reseau interne (pas de
+// certificat HTTPS sur be-intra16) : le controle HTTPS a ete retire ici,
+// en connaissance de cause, car le mot de passe Exchange transite alors
+// en clair sur le LAN interne le temps de la requete POST.
 
 $erreur = null;
 $mailboxes = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!$isHttps) {
-        $erreur = "Cette page doit etre servie en HTTPS : le mot de passe Exchange ne doit jamais transiter en clair sur le reseau.";
-    } elseif (!isset($_POST['login'], $_POST['password']) || trim($_POST['login']) === '' || $_POST['password'] === '') {
+    if (!isset($_POST['login'], $_POST['password']) || trim($_POST['login']) === '' || $_POST['password'] === '') {
         $erreur = "Identifiant et mot de passe requis.";
     } else {
         $login = trim($_POST['login']);
