@@ -31,26 +31,8 @@ $WarningPreference = 'SilentlyContinue'
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ExchangeServer = 'BE-EXCHANGE.acebesancon.lan'
-$ConnectionUri = "https://$ExchangeServer/PowerShell/"
-$AuthMethod = 'Basic'
-
-# Basic sur HTTPS : plus fiable que Kerberos ici, car ce script tourne
-# dans un processus non-interactif (le pool applicatif IIS derriere la
-# page PHP), qui ne peut generalement pas obtenir de ticket Kerberos pour
-# un compte different du sien - la session finit alors ouverte avec
-# l'identite du serveur/pool IIS (sans droits Exchange), d'ou l'acces
-# refuse observe avec -Authentication Kerberos. Basic envoie directement
-# les identifiants fournis, sans dependre de ce mecanisme.
-#
-# La chaine de certification (CA) est verifiee normalement : le
-# certificat presente par IIS pour ce nom d'hote est celui de
-# mail.acebesancon.fr (certificat commercial, deja approuve). Seule la
-# correspondance de nom est ignoree (-SkipCNCheck), car ce certificat ne
-# couvre pas BE-EXCHANGE.acebesancon.lan - un certificat SNI dedie pour ce
-# nom resoudrait ca proprement mais toucherait la configuration IIS de
-# production (OWA/Outlook/mobile), d'ou ce compromis pour l'usage interne.
-# -SkipRevocationCheck : sans objet ici (pas de CRL exploitee en interne).
-$sessionOption = New-PSSessionOption -SkipCNCheck -SkipRevocationCheck
+$ConnectionUri = "http://$ExchangeServer/PowerShell/"
+$AuthMethod = 'Kerberos'
 
 function Write-JsonResult {
     param($Object)
@@ -79,7 +61,7 @@ finally {
 
 $session = $null
 try {
-    $session = New-PSSession -ConnectionUri $ConnectionUri -ConfigurationName Microsoft.Exchange -Authentication $AuthMethod -Credential $cred -SessionOption $sessionOption -AllowRedirection -ErrorAction Stop
+    $session = New-PSSession -ConnectionUri $ConnectionUri -ConfigurationName Microsoft.Exchange -Authentication $AuthMethod -Credential $cred -ErrorAction Stop
     Import-PSSession -Session $session -DisableNameChecking -AllowClobber -ErrorAction Stop | Out-Null
 
     # Uniquement les boites mails "utilisateur" (exclut salles,
