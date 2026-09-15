@@ -22,6 +22,14 @@
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 
+# Quand sa sortie est redirigee vers un tube (le cas ici, PHP utilise
+# proc_open), Windows PowerShell encode par defaut en UTF-16 : un octet nul
+# entre chaque caractere, illisible pour PHP (json_decode) et le
+# navigateur. On force UTF-8 pour que le JSON transmis soit exploitable.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 $ExchangeServer = 'BE-EXCHANGE.acebesancon.lan'
 $ConnectionUri = "http://$ExchangeServer/PowerShell/"
 $AuthMethod = 'Kerberos'
