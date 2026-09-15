@@ -55,7 +55,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stderr = stream_get_contents($pipes[2]);
             fclose($pipes[1]);
             fclose($pipes[2]);
-            proc_close($process);
+            $exitCode = proc_close($process);
 
             // Le mot de passe ne doit pas rester en memoire plus que necessaire.
             $password = str_repeat('x', strlen($password));
@@ -63,7 +63,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $data = json_decode($stdout, true);
             if ($data === null) {
-                $erreur = "Reponse invalide du script PowerShell." . ($stderr !== '' ? " ($stderr)" : "");
+                // Diagnostic temporaire : a retirer une fois le flux valide.
+                $erreur = "Reponse invalide du script PowerShell (code retour $exitCode).\n"
+                        . "--- stdout ---\n" . ($stdout !== '' ? $stdout : '(vide)') . "\n"
+                        . "--- stderr ---\n" . ($stderr !== '' ? $stderr : '(vide)');
             } elseif (isset($data['error'])) {
                 $erreur = $data['error'];
             } else {
@@ -118,7 +121,7 @@ function formatDelegations($m) {
 <div class="sous-titre">Serveur Exchange : BE-EXCHANGE.acebesancon.lan</div>
 
 <?php if ($erreur): ?>
-    <div class="erreur"><?php echo htmlspecialchars($erreur); ?></div>
+    <div class="erreur"><pre style="white-space:pre-wrap;margin:0;font-family:inherit;"><?php echo htmlspecialchars($erreur); ?></pre></div>
 <?php endif; ?>
 
 <?php if ($mailboxes === null): ?>
