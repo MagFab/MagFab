@@ -31,8 +31,24 @@ $WarningPreference = 'SilentlyContinue'
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ExchangeServer = 'BE-EXCHANGE.acebesancon.lan'
-$ConnectionUri = "http://$ExchangeServer/PowerShell/"
-$AuthMethod = 'Kerberos'
+$ConnectionUri = "https://$ExchangeServer/PowerShell/"
+$AuthMethod = 'Basic'
+
+# Basic sur HTTPS : plus fiable que Kerberos ici, car ce script tourne
+# dans un processus non-interactif (le pool applicatif IIS derriere la
+# page PHP), qui ne peut generalement pas obtenir de ticket Kerberos pour
+# un compte different du sien - la session finit alors ouverte avec
+# l'identite du serveur/pool IIS (sans droits Exchange), d'ou l'acces
+# refuse observe avec -Authentication Kerberos. Basic envoie directement
+# les identifiants fournis, sans dependre de ce mecanisme.
+#
+# Le certificat (auto-signe par defaut sur Exchange 2013) doit etre
+# importe dans le magasin "Autorites de certification racines de
+# confiance" de l'ordinateur local sur be-intra16 pour que la validation
+# TLS passe normalement (CA + nom d'hote verifies). Seul le controle de
+# revocation est ignore : un certificat auto-signe n'a pas de liste de
+# revocation valide, ce n'est pas lie a la confiance accordee au serveur.
+$sessionOption = New-PSSessionOption -SkipRevocationCheck
 
 function Write-JsonResult {
     param($Object)
@@ -61,7 +77,7 @@ finally {
 
 $session = $null
 try {
-    $session = New-PSSession -ConnectionUri $ConnectionUri -ConfigurationName Microsoft.Exchange -Authentication $AuthMethod -Credential $cred -ErrorAction Stop
+    $session = New-PSSession -ConnectionUri $ConnectionUri -ConfigurationName Microsoft.Exchange -Authentication $AuthMethod -Credential $cred -SessionOption $sessionOption -ErrorAction Stop
     Import-PSSession -Session $session -DisableNameChecking -AllowClobber -ErrorAction Stop | Out-Null
 
     # Uniquement les boites mails "utilisateur" (exclut salles,
