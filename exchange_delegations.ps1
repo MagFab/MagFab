@@ -42,13 +42,15 @@ $AuthMethod = 'Basic'
 # refuse observe avec -Authentication Kerberos. Basic envoie directement
 # les identifiants fournis, sans dependre de ce mecanisme.
 #
-# Le certificat (auto-signe par defaut sur Exchange 2013) doit etre
-# importe dans le magasin "Autorites de certification racines de
-# confiance" de l'ordinateur local sur be-intra16 pour que la validation
-# TLS passe normalement (CA + nom d'hote verifies). Seul le controle de
-# revocation est ignore : un certificat auto-signe n'a pas de liste de
-# revocation valide, ce n'est pas lie a la confiance accordee au serveur.
-$sessionOption = New-PSSessionOption -SkipRevocationCheck
+# La chaine de certification (CA) est verifiee normalement : le
+# certificat presente par IIS pour ce nom d'hote est celui de
+# mail.acebesancon.fr (certificat commercial, deja approuve). Seule la
+# correspondance de nom est ignoree (-SkipCNCheck), car ce certificat ne
+# couvre pas BE-EXCHANGE.acebesancon.lan - un certificat SNI dedie pour ce
+# nom resoudrait ca proprement mais toucherait la configuration IIS de
+# production (OWA/Outlook/mobile), d'ou ce compromis pour l'usage interne.
+# -SkipRevocationCheck : sans objet ici (pas de CRL exploitee en interne).
+$sessionOption = New-PSSessionOption -SkipCNCheck -SkipRevocationCheck
 
 function Write-JsonResult {
     param($Object)
