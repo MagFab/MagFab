@@ -115,7 +115,7 @@ function formatDelegations($m) {
 <body>
 
 <h1>Delegations des boites mails Exchange</h1>
-<div class="sous-titre">Serveur Exchange : 10.4.17.234</div>
+<div class="sous-titre">Serveur Exchange : BE-EXCHANGE.acebesancon.lan</div>
 
 <?php if ($erreur): ?>
     <div class="erreur"><?php echo htmlspecialchars($erreur); ?></div>

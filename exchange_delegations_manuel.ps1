@@ -19,9 +19,9 @@
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 
-$ExchangeServer = '10.4.17.234'
+$ExchangeServer = 'BE-EXCHANGE.acebesancon.lan'
 $ConnectionUri = "http://$ExchangeServer/PowerShell/"
-$AuthMethod = 'Negotiate'
+$AuthMethod = 'Kerberos'
 
 $cred = Get-Credential -Message "Identifiants Exchange (ex: domaine\administrateur)"
 if (-not $cred) {
@@ -32,7 +32,7 @@ if (-not $cred) {
 $session = $null
 try {
     Write-Host "Connexion a $ExchangeServer..." -ForegroundColor Cyan
-    $session = New-PSSession -ConnectionUri $ConnectionUri -Authentication $AuthMethod -Credential $cred -ErrorAction Stop
+    $session = New-PSSession -ConnectionUri $ConnectionUri -ConfigurationName Microsoft.Exchange -Authentication $AuthMethod -Credential $cred -ErrorAction Stop
     Import-PSSession -Session $session -DisableNameChecking -AllowClobber -ErrorAction Stop | Out-Null
 
     Write-Host "Recuperation des boites mails..." -ForegroundColor Cyan

@@ -22,9 +22,9 @@
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 
-$ExchangeServer = '10.4.17.234'
+$ExchangeServer = 'BE-EXCHANGE.acebesancon.lan'
 $ConnectionUri = "http://$ExchangeServer/PowerShell/"
-$AuthMethod = 'Negotiate'
+$AuthMethod = 'Kerberos'
 
 function Write-JsonResult {
     param($Object)
@@ -53,7 +53,7 @@ finally {
 
 $session = $null
 try {
-    $session = New-PSSession -ConnectionUri $ConnectionUri -Authentication $AuthMethod -Credential $cred -ErrorAction Stop
+    $session = New-PSSession -ConnectionUri $ConnectionUri -ConfigurationName Microsoft.Exchange -Authentication $AuthMethod -Credential $cred -ErrorAction Stop
     Import-PSSession -Session $session -DisableNameChecking -AllowClobber -ErrorAction Stop | Out-Null
 
     # Uniquement les boites mails "utilisateur" (exclut salles,
