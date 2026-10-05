@@ -1,0 +1,56 @@
+begin
+
+// Import des absences depuis un fichier CSV
+// Format attendu (1 ligne de titre) :
+//   Col 1 : Matricule
+//   Col 2 : Code         (AB-xxx, xxx = code absence Silaé, ex. AB-300)
+//   Col 3 : Valeur       (durée de l'absence, en jours)
+//   Col 4 : Date début   (jj/mm/aaaa)
+//   Col 5 : Date fin     (jj/mm/aaaa)
+
+	if parametrage then
+		par.nblignestitre = 1
+		par.sepdec = ","
+		par.sepchamp = ";"
+	else
+		Matricule = StrTrim(ValeurString(1))
+		if StrLen(Matricule) > 0 then
+			if IdentifieSalarieEmploi(Matricule) = true then
+				if BulletinExiste() = false then
+					Code = StrTrim(ValeurString(2))
+					Valeur = ValeurDouble(3)
+					sDateDeb = StrTrim(ValeurString(4))
+					sDateFin = StrTrim(ValeurString(5))
+
+					if Mid(Code,1,3) = "AB-" then
+						cAbs = Mid(Code,4,-1)
+
+						if sDateDeb = "" Or sDateFin = "" then
+							print "Matricule <" + Matricule + ">, code " + Code + " : date de début ou de fin manquante, ligne ignorée."
+						else
+							DateDeb = Str2Date(sDateDeb,"dd/MM/yyyy")
+							DateFin = Str2Date(sDateFin,"dd/MM/yyyy")
+
+							if DateFin < DateDeb then
+								print "Matricule <" + Matricule + ">, code " + Code + " : date de fin (" + sDateFin + ") antérieure à la date de début (" + sDateDeb + "), ligne ignorée."
+							else
+								if Valeur = 0.0 then
+									print "Matricule <" + Matricule + ">, code " + Code + " du " + sDateDeb + " au " + sDateFin + " : valeur à 0, à vérifier."
+								endif
+								call GenereAbsence(cAbs, DateDeb, DateFin, -Valeur)
+							endif
+						endif
+					else
+						print "Matricule <" + Matricule + "> : code introuvable <" + Code + ">, ligne ignorée."
+					endif
+				else
+					print "Salarié <" + Matricule + ">, bulletin existant."
+				endif
+			else
+				print "Salarié et/ou emploi pour le matricule <" + Matricule + "> non identifié."
+			endif
+		else
+			print "Salarié sans matricule"
+		endif
+	endif
+end
