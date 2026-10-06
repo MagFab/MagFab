@@ -121,6 +121,27 @@ function attr($entree, $nom) {
     return isset($entree[$nom][0]) ? $entree[$nom][0] : '';
 }
 
+// distinguishedName -> chemin complet facon "Utilisateurs et ordinateurs AD"
+// CN=Jean Dupont,OU=Compta,OU=Cabinet,DC=acebesancon,DC=lan
+//   -> acebesancon.lan/Cabinet/Compta/Jean Dupont
+function cheminAD($dn) {
+    $domaine = [];
+    $chemin = [];
+    // decoupe sur les virgules non echappees
+    foreach (preg_split('/(?<!\\\\),/', $dn) as $rdn) {
+        $pos = strpos($rdn, '=');
+        if ($pos === false) continue;
+        $type = strtoupper(trim(substr($rdn, 0, $pos)));
+        // retire les echappements LDAP : "\," -> ","  et  "\2C" -> ","
+        $valeur = preg_replace_callback('/\\\\([0-9A-Fa-f]{2}|.)/', function ($m) {
+            return strlen($m[1]) === 2 ? chr(hexdec($m[1])) : $m[1];
+        }, substr($rdn, $pos + 1));
+        if ($type === 'DC') $domaine[] = $valeur;
+        else $chemin[] = $valeur;
+    }
+    return implode('/', array_merge([implode('.', $domaine)], array_reverse($chemin)));
+}
+
 // Integer8 AD (intervalles de 100 ns depuis le 01/01/1601 UTC) -> timestamp Unix
 // null si 0 (jamais) ou valeur "jamais d'expiration"
 // Calcul en flottant : un PHP 32 bits (frequent sous Windows) ne sait pas
@@ -188,6 +209,7 @@ foreach (ldapRechercheTout($ds, $baseDn, $filtreUsers,
     $uac = (int) attr($e, 'useraccountcontrol');
     $utilisateurs[$dn] = [
         'login'     => attr($e, 'samaccountname'),
+        'chemin'    => cheminAD($e['dn']),
         'nom'       => attr($e, 'displayname'),
         'actif'     => !($uac & 2),                 // ACCOUNTDISABLE
         'mdpExpire' => (bool) ($uac & 65536),       // DONT_EXPIRE_PASSWORD
@@ -205,6 +227,7 @@ foreach (ldapRechercheTout($ds, $baseDn, $filtreOrdis,
     $uac = (int) attr($e, 'useraccountcontrol');
     $ordinateurs[$dn] = [
         'nom'    => attr($e, 'name'),
+        'chemin' => cheminAD($e['dn']),
         'os'     => trim(attr($e, 'operatingsystem') . ' ' . attr($e, 'operatingsystemversion')),
         'actif'  => !($uac & 2),
         'dc'     => (bool) ($uac & 8192),           // SERVER_TRUST_ACCOUNT
@@ -276,7 +299,7 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['utilisateurs', 'ordina
 
     if ($type === 'utilisateurs') {
         echo '<tr><th>Login</th><th>Nom</th><th>Actif</th><th>Dernier logon</th><th>Jours</th>'
-           . '<th>Dernier changement mdp</th><th>Jours</th><th>Mdp n\'expire jamais</th></tr>';
+           . '<th>Dernier changement mdp</th><th>Jours</th><th>Mdp n\'expire jamais</th><th>Chemin AD</th></tr>';
         foreach ($utilisateurs as $u) {
             echo '<tr>'
                . celluleXls($u['login'])
@@ -287,11 +310,12 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['utilisateurs', 'ordina
                . ($u['mdpAChanger'] ? celluleXls('A changer') : celluleDateXls($u['mdp']))
                . celluleXls(joursDepuis($u['mdp']), 'num')
                . celluleXls($u['mdpExpire'] ? 'Oui' : 'Non')
+               . celluleXls($u['chemin'])
                . '</tr>';
         }
     } else {
         echo '<tr><th>Ordinateur</th><th>Systeme</th><th>Actif</th><th>Derniere connexion</th>'
-           . '<th>Jours</th><th>Dernier changement mdp machine</th></tr>';
+           . '<th>Jours</th><th>Dernier changement mdp machine</th><th>Chemin AD</th></tr>';
         foreach ($ordinateurs as $o) {
             echo '<tr>'
                . celluleXls($o['nom'])
@@ -300,6 +324,7 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['utilisateurs', 'ordina
                . celluleDateXls($o['logon'], 'Jamais')
                . celluleXls(joursDepuis($o['logon']), 'num')
                . celluleDateXls($o['mdp'])
+               . celluleXls($o['chemin'])
                . '</tr>';
         }
     }
@@ -351,6 +376,7 @@ foreach ($ordinateurs as $o) {
     table.sortable th.tri-asc::after { content: " \25B2"; font-size: 10px; }
     table.sortable th.tri-desc::after { content: " \25BC"; font-size: 10px; }
     td.num, th.num { text-align: right; }
+    td.chemin { color: #666; font-size: 12px; }
     td.ok { color: #1d6f42; }
     td.attention { color: #b36b00; font-weight: 600; }
     td.alerte { color: #c0392b; font-weight: 600; }
@@ -435,6 +461,7 @@ foreach ($ordinateurs as $o) {
                 <th class="num">Jours</th>
                 <th>Dernier changement mdp</th>
                 <th class="num">Jours</th>
+                <th>Chemin AD</th>
             </tr>
         </thead>
         <tbody>
@@ -459,6 +486,7 @@ foreach ($ordinateurs as $o) {
                     ?>
                 </td>
                 <td class="num" data-sort="<?php echo $jMdp ?? 999999; ?>"><?php echo $jMdp ?? ''; ?></td>
+                <td class="chemin"><?php echo htmlspecialchars($u['chemin']); ?></td>
             </tr>
         <?php endforeach; ?>
         </tbody>
@@ -482,6 +510,7 @@ foreach ($ordinateurs as $o) {
                 <th>Etat</th>
                 <th>Dernière connexion</th>
                 <th class="num">Jours</th>
+                <th>Chemin AD</th>
             </tr>
         </thead>
         <tbody>
@@ -499,6 +528,7 @@ foreach ($ordinateurs as $o) {
                     <?php echo $o['logon'] === null ? 'Jamais' : formatDate($o['logon']); ?>
                 </td>
                 <td class="num" data-sort="<?php echo $jLogon ?? 999999; ?>"><?php echo $jLogon ?? ''; ?></td>
+                <td class="chemin"><?php echo htmlspecialchars($o['chemin']); ?></td>
             </tr>
         <?php endforeach; ?>
         </tbody>
