@@ -243,30 +243,62 @@ uasort($utilisateurs, $triLogon);
 uasort($ordinateurs, $triLogon);
 
 // ------------------------------------------------------------
-// Export CSV (ouvrable directement dans Excel)
+// Export Excel : tableau HTML ouvert par Excel, avec le format de
+// cellule impose (mso-number-format) -> vraies dates jj/mm/aaaa hh:mm
 // ------------------------------------------------------------
+function celluleXls($valeur, $classe = 'txt') {
+    return '<td class="' . $classe . '">' . htmlspecialchars((string) $valeur) . '</td>';
+}
+
+// Date au format "aaaa-mm-jj hh:mm" : Excel la reconnait comme une date quelle que soit la langue
+function celluleDateXls($ts, $siVide = '') {
+    if ($ts === null) return celluleXls($siVide);
+    return celluleXls(date('Y-m-d H:i', $ts), 'dt');
+}
+
 if (isset($_GET['export']) && in_array($_GET['export'], ['utilisateurs', 'ordinateurs'], true)) {
     $type = $_GET['export'];
-    header('Content-Type: text/csv; charset=UTF-8');
-    header('Content-Disposition: attachment; filename="ad_' . $type . '_' . date('Ymd') . '.csv"');
-    $out = fopen('php://output', 'w');
-    fwrite($out, "\xEF\xBB\xBF"); // BOM pour Excel
+    header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="ad_' . $type . '_' . date('Ymd_Hi') . '.xls"');
+    echo "\xEF\xBB\xBF";
+    echo '<html><head><meta charset="UTF-8"><style>'
+       . 'td, th { font-family: Calibri, Arial; font-size: 11pt; }'
+       . 'th { background: #d9e1f2; font-weight: bold; }'
+       . '.txt { mso-number-format:"\\@"; }'
+       . '.dt { mso-number-format:"dd\\/mm\\/yyyy\\ hh\\:mm"; text-align: left; }'
+       . '.num { mso-number-format:"0"; }'
+       . '</style></head><body><table border="1">';
+
     if ($type === 'utilisateurs') {
-        fputcsv($out, ['Login', 'Nom', 'Actif', 'Dernier logon', 'Jours', 'Dernier changement mdp', 'Jours', 'Mdp n\'expire jamais'], ';');
+        echo '<tr><th>Login</th><th>Nom</th><th>Actif</th><th>Dernier logon</th><th>Jours</th>'
+           . '<th>Dernier changement mdp</th><th>Jours</th><th>Mdp n\'expire jamais</th></tr>';
         foreach ($utilisateurs as $u) {
-            fputcsv($out, [$u['login'], $u['nom'], $u['actif'] ? 'Oui' : 'Non',
-                formatDate($u['logon']), joursDepuis($u['logon']),
-                $u['mdpAChanger'] ? 'A changer' : formatDate($u['mdp']), joursDepuis($u['mdp']),
-                $u['mdpExpire'] ? 'Oui' : 'Non'], ';');
+            echo '<tr>'
+               . celluleXls($u['login'])
+               . celluleXls($u['nom'])
+               . celluleXls($u['actif'] ? 'Oui' : 'Non')
+               . celluleDateXls($u['logon'], 'Jamais')
+               . celluleXls(joursDepuis($u['logon']), 'num')
+               . ($u['mdpAChanger'] ? celluleXls('A changer') : celluleDateXls($u['mdp']))
+               . celluleXls(joursDepuis($u['mdp']), 'num')
+               . celluleXls($u['mdpExpire'] ? 'Oui' : 'Non')
+               . '</tr>';
         }
     } else {
-        fputcsv($out, ['Ordinateur', 'Systeme', 'Actif', 'Derniere connexion', 'Jours', 'Dernier changement mdp machine'], ';');
+        echo '<tr><th>Ordinateur</th><th>Systeme</th><th>Actif</th><th>Derniere connexion</th>'
+           . '<th>Jours</th><th>Dernier changement mdp machine</th></tr>';
         foreach ($ordinateurs as $o) {
-            fputcsv($out, [$o['nom'], $o['os'], $o['actif'] ? 'Oui' : 'Non',
-                formatDate($o['logon']), joursDepuis($o['logon']), formatDate($o['mdp'])], ';');
+            echo '<tr>'
+               . celluleXls($o['nom'])
+               . celluleXls($o['os'])
+               . celluleXls($o['actif'] ? 'Oui' : 'Non')
+               . celluleDateXls($o['logon'], 'Jamais')
+               . celluleXls(joursDepuis($o['logon']), 'num')
+               . celluleDateXls($o['mdp'])
+               . '</tr>';
         }
     }
-    fclose($out);
+    echo '</table></body></html>';
     exit;
 }
 
