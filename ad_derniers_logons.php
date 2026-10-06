@@ -20,6 +20,31 @@ function classeAnciennete($jours, $seuilAlerte, $seuilAttention = null) {
     return 'ok';
 }
 
+const SEUIL_EXPIRATION_JOURS = 30; // expiration du compte proche -> attention
+
+// Icone "sens interdit" en debut de ligne pour un compte desactive
+function celluleIconeDesactive($actif) {
+    if ($actif) return '<td class="icone" data-sort="0"></td>';
+    return '<td class="icone" data-sort="1" title="Compte désactivé">'
+         . '<svg width="16" height="16" viewBox="0 0 16 16" aria-label="Compte désactivé">'
+         . '<circle cx="8" cy="8" r="8" fill="#d32f2f"/><rect x="3" y="6.5" width="10" height="3" rx="1" fill="#fff"/></svg></td>';
+}
+
+// Case cochee (Oui) ou vide (Non), triable
+function celluleCase($valeur, $classe = '', $title = '') {
+    return '<td class="case ' . ($valeur ? $classe : '') . '" data-sort="' . ($valeur ? 1 : 0) . '"'
+         . ($title !== '' ? ' title="' . htmlspecialchars($title) . '"' : '') . '>' . ($valeur ? '&#10004;' : '') . '</td>';
+}
+
+// Date d'expiration du compte : rouge si deja expire, orange si proche
+function celluleExpiration($ts) {
+    if ($ts === null) return '<td class="vide" data-sort="9999999999">Jamais</td>';
+    $jours = (int) floor(($ts - time()) / 86400);
+    $classe = $ts < time() ? 'alerte' : ($jours <= SEUIL_EXPIRATION_JOURS ? 'attention' : '');
+    $title = $ts < time() ? 'Compte expiré' : 'Expire dans ' . $jours . ' jour(s)';
+    return '<td class="' . $classe . '" data-sort="' . $ts . '" title="' . $title . '">' . formatDate($ts) . '</td>';
+}
+
 $ds = adConnexionPrincipale();
 list($utilisateurs, $ordinateurs, $dcs, $dcsInjoignables) = adChargerComptes($ds);
 ldap_unbind($ds);
@@ -58,7 +83,9 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['utilisateurs', 'ordina
 
     if ($type === 'utilisateurs') {
         echo '<tr><th>Login</th><th>Nom</th><th>Actif</th><th>Dernier logon</th><th>Jours</th>'
-           . '<th>Dernier changement mdp</th><th>Jours</th><th>Mdp n\'expire jamais</th><th>Chemin AD</th></tr>';
+           . '<th>Dernier changement mdp</th><th>Jours</th><th>Expiration du compte</th>'
+           . '<th>Doit changer le mdp</th><th>Ne peut pas changer le mdp</th><th>Mdp n\'expire jamais</th><th>Compte verrouille</th>'
+           . '<th>Chemin AD</th></tr>';
         foreach ($utilisateurs as $u) {
             echo '<tr>'
                . celluleXls($u['login'])
@@ -68,7 +95,11 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['utilisateurs', 'ordina
                . celluleXls(joursDepuis($u['logon']), 'num')
                . ($u['mdpAChanger'] ? celluleXls('A changer') : celluleDateXls($u['mdp']))
                . celluleXls(joursDepuis($u['mdp']), 'num')
-               . celluleXls($u['mdpExpire'] ? 'Oui' : 'Non')
+               . celluleDateXls($u['expiration'], 'Jamais')
+               . celluleXls(ouiNon($u['mdpAChanger']))
+               . celluleXls(ouiNon($u['mdpNonModifiable']))
+               . celluleXls(ouiNon($u['mdpNExpireJamais']))
+               . celluleXls(ouiNon($u['verrouille']))
                . celluleXls($u['chemin'])
                . '</tr>';
         }
@@ -139,6 +170,11 @@ foreach ($ordinateurs as $o) {
     table.sortable th.tri-desc::after { content: " \25BC"; font-size: 10px; }
     td.num, th.num { text-align: right; }
     td.chemin { color: #666; font-size: 12px; }
+    th.icone, td.icone { width: 16px; padding-left: 8px; padding-right: 0; }
+    td.icone svg { display: block; }
+    th.case { text-align: center; max-width: 90px; white-space: normal; line-height: 1.2; }
+    td.case { text-align: center; font-size: 14px; color: #3d7ab8; }
+    td.vide { color: #999; }
     tr.ligne-objet { cursor: pointer; }
     tr.ligne-objet:hover td { background: #f0f4fa; }
 
@@ -219,13 +255,18 @@ foreach ($ordinateurs as $o) {
     <table class="sortable" id="table-users">
         <thead>
             <tr>
+                <th class="icone" title="Compte désactivé"></th>
                 <th>Login</th>
                 <th>Nom</th>
-                <th>Etat</th>
                 <th>Dernier logon</th>
                 <th class="num">Jours</th>
                 <th>Dernier changement mdp</th>
                 <th class="num">Jours</th>
+                <th>Expiration du compte</th>
+                <th class="case" title="L'utilisateur devra changer le mot de passe à la prochaine ouverture de session">Doit changer le mdp</th>
+                <th class="case" title="L'utilisateur ne peut pas changer de mot de passe">Ne peut pas changer le mdp</th>
+                <th class="case" title="Le mot de passe n'expire jamais">Mdp n'expire jamais</th>
+                <th class="case" title="Le compte est verrouillé (trop d'essais de mot de passe)">Verrouillé</th>
                 <th>Chemin AD</th>
             </tr>
         </thead>
@@ -233,24 +274,28 @@ foreach ($ordinateurs as $o) {
         <?php foreach ($utilisateurs as $u):
             $jLogon = joursDepuis($u['logon']);
             $jMdp = joursDepuis($u['mdp']);
-            $clsMdp = ($u['mdpAChanger'] || $u['mdpExpire']) ? 'attention' : classeAnciennete($jMdp, SEUIL_MDP_JOURS);
+            $clsMdp = ($u['mdpAChanger'] || $u['mdpNExpireJamais']) ? '' : classeAnciennete($jMdp, SEUIL_MDP_JOURS);
         ?>
             <tr class="ligne-objet <?php echo $u['actif'] ? '' : 'desactive'; ?>" data-id="<?php echo $u['id']; ?>">
+                <?php echo celluleIconeDesactive($u['actif']); ?>
                 <td><?php echo htmlspecialchars($u['login']); ?></td>
                 <td><?php echo htmlspecialchars($u['nom']); ?></td>
-                <td><?php echo $u['actif'] ? 'Actif' : '<span class="badge">Désactivé</span>'; ?></td>
                 <td class="<?php echo classeAnciennete($jLogon, SEUIL_INACTIF_JOURS, SEUIL_ATTENTION_JOURS); ?>" data-sort="<?php echo $u['logon'] ?? 0; ?>">
                     <?php echo $u['logon'] === null ? 'Jamais' : formatDate($u['logon']); ?>
                 </td>
                 <td class="num" data-sort="<?php echo $jLogon ?? 999999; ?>"><?php echo $jLogon ?? ''; ?></td>
                 <td class="<?php echo $clsMdp; ?>" data-sort="<?php echo $u['mdp'] ?? 0; ?>">
-                    <?php
-                    if ($u['mdpAChanger']) echo 'A changer au prochain logon';
-                    else echo formatDate($u['mdp']);
-                    if ($u['mdpExpire']) echo ' <span class="badge">n\'expire jamais</span>';
-                    ?>
+                    <?php echo formatDate($u['mdp']); ?>
                 </td>
                 <td class="num" data-sort="<?php echo $jMdp ?? 999999; ?>"><?php echo $jMdp ?? ''; ?></td>
+                <?php
+                echo celluleExpiration($u['expiration']);
+                echo celluleCase($u['mdpAChanger'], 'attention');
+                echo celluleCase($u['mdpNonModifiable']);
+                echo celluleCase($u['mdpNExpireJamais']);
+                echo celluleCase($u['verrouille'], 'alerte',
+                    $u['verrouilleLe'] !== null ? 'Verrouillé le ' . formatDate($u['verrouilleLe']) : '');
+                ?>
                 <td class="chemin"><?php echo htmlspecialchars($u['chemin']); ?></td>
             </tr>
         <?php endforeach; ?>
@@ -270,9 +315,9 @@ foreach ($ordinateurs as $o) {
     <table class="sortable" id="table-ordis">
         <thead>
             <tr>
+                <th class="icone" title="Compte désactivé"></th>
                 <th>Ordinateur</th>
                 <th>Système</th>
-                <th>Etat</th>
                 <th>Dernière connexion</th>
                 <th class="num">Jours</th>
                 <th>Chemin AD</th>
@@ -283,12 +328,12 @@ foreach ($ordinateurs as $o) {
             $jLogon = joursDepuis($o['logon']);
         ?>
             <tr class="ligne-objet <?php echo $o['actif'] ? '' : 'desactive'; ?>" data-id="<?php echo $o['id']; ?>">
+                <?php echo celluleIconeDesactive($o['actif']); ?>
                 <td>
                     <?php echo htmlspecialchars($o['nom']); ?>
                     <?php if ($o['dc']): ?><span class="badge dc">DC</span><?php endif; ?>
                 </td>
                 <td><?php echo htmlspecialchars($o['os']); ?></td>
-                <td><?php echo $o['actif'] ? 'Actif' : '<span class="badge">Désactivé</span>'; ?></td>
                 <td class="<?php echo classeAnciennete($jLogon, SEUIL_INACTIF_JOURS, SEUIL_ATTENTION_JOURS); ?>" data-sort="<?php echo $o['logon'] ?? 0; ?>">
                     <?php echo $o['logon'] === null ? 'Jamais' : formatDate($o['logon']); ?>
                 </td>

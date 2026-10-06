@@ -127,14 +127,15 @@ function adConnexionPrincipale() {
 }
 
 // Recherche paginee (l'AD limite a 1000 resultats par page)
-function ldapRechercheTout($ds, $base, $filtre, $attributs) {
+// $controlesSupp : controles LDAP supplementaires (ex. CONTROLE_SD_DACL)
+function ldapRechercheTout($ds, $base, $filtre, $attributs, $controlesSupp = []) {
     $resultats = [];
     $cookie = '';
     do {
-        $controles = [[
+        $controles = array_merge([[
             'oid' => LDAP_CONTROL_PAGEDRESULTS,
             'value' => ['size' => 500, 'cookie' => $cookie],
-        ]];
+        ]], $controlesSupp);
         $sr = @ldap_search($ds, $base, $filtre, $attributs, 0, 0, 0, LDAP_DEREF_NEVER, $controles);
         if ($sr === false) break;
         ldap_parse_result($ds, $sr, $errcode, $matcheddn, $errmsg, $referrals, $ctrlRetour);
@@ -256,6 +257,50 @@ function groupesObjet($entree) {
     return $groupes;
 }
 
+// Controle LDAP_SERVER_SD_FLAGS : demande uniquement la DACL de nTSecurityDescriptor
+// (sans lui, l'AD refuse de renvoyer l'attribut a un compte non administrateur)
+const CONTROLE_SD_DACL = ['oid' => '1.2.840.113556.1.4.801', 'value' => "\x30\x03\x02\x01\x04"];
+
+// "L'utilisateur ne peut pas changer de mot de passe" : ce n'est pas un indicateur
+// du compte mais une interdiction dans ses permissions (ACL), posee par la console AD :
+// refus du droit etendu "Changer le mot de passe" pour Tout le monde ou SELF.
+function mdpNonModifiable($sd, $uac) {
+    if ($uac & 64) return true;                 // PASSWD_CANT_CHANGE (rarement renseigne)
+    if (strlen($sd) < 20) return false;
+    $offsetDacl = unpack('V', substr($sd, 16, 4))[1];
+    if ($offsetDacl <= 0 || $offsetDacl + 8 > strlen($sd)) return false;
+    $nbAce = unpack('v', substr($sd, $offsetDacl + 4, 2))[1];
+
+    $guidChangerMdp = "\x53\x1a\x72\xab\x2f\x1e\xd0\x11\x98\x19\x00\xaa\x00\x40\x52\x9b"; // ab721a53-1e2f-11d0-9819-00aa0040529b
+    $sids = [
+        "\x01\x01\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00",   // S-1-1-0  Tout le monde
+        "\x01\x01\x00\x00\x00\x00\x00\x05\x0a\x00\x00\x00",   // S-1-5-10 SELF
+    ];
+    $pos = $offsetDacl + 8;
+    for ($i = 0; $i < $nbAce && $pos + 4 <= strlen($sd); $i++) {
+        $type = ord($sd[$pos]);
+        $taille = unpack('v', substr($sd, $pos + 2, 2))[1];
+        if ($taille < 4) break;
+        if ($type === 6 && $pos + 12 <= strlen($sd)) {   // ACCESS_DENIED_OBJECT_ACE
+            $masque = unpack('V', substr($sd, $pos + 4, 4))[1];
+            $drapeaux = unpack('V', substr($sd, $pos + 8, 4))[1];
+            $p = $pos + 12;
+            $typeObjet = '';
+            if ($drapeaux & 1) { $typeObjet = substr($sd, $p, 16); $p += 16; }
+            if ($drapeaux & 2) $p += 16;
+            if (($masque & 0x100) && $typeObjet === $guidChangerMdp && in_array(substr($sd, $p, 12), $sids, true)) {
+                return true;
+            }
+        }
+        $pos += $taille;
+    }
+    return false;
+}
+
+function ouiNon($valeur) {
+    return $valeur ? 'Oui' : 'Non';
+}
+
 // Valeurs des attributs personnalises (ATTRIBUTS_PERSO)
 function champsPerso($entree) {
     $champs = [];
@@ -288,16 +333,29 @@ function adChargerComptes($ds) {
     foreach (ldapRechercheTout($ds, $baseDn, FILTRE_UTILISATEURS,
             array_merge(['samaccountname', 'displayname', 'useraccountcontrol', 'lastlogontimestamp', 'lastlogon', 'pwdlastset',
                          'sn', 'givenname', 'mail', 'telephonenumber', 'mobile', 'description', 'physicaldeliveryofficename',
-                         'memberof', 'primarygroupid', 'whencreated', 'whenchanged'], ATTRIBUTS_PERSO)) as $e) {
+                         'memberof', 'primarygroupid', 'whencreated', 'whenchanged', 'accountexpires', 'lockouttime',
+                         'msds-user-account-control-computed', 'ntsecuritydescriptor'], ATTRIBUTS_PERSO),
+            [CONTROLE_SD_DACL]) as $e) {
         $dn = strtolower($e['dn']);
         $uac = (int) attr($e, 'useraccountcontrol');
+        // Verrouillage : attribut calcule par le DC (bit 0x10) ; a defaut, lockoutTime renseigne
+        $uacCalcule = attr($e, 'msds-user-account-control-computed');
+        $verrouille = $uacCalcule !== ''
+            ? (bool) ((int) $uacCalcule & 16)
+            : filetimeVersTimestamp(attr($e, 'lockouttime')) !== null;
+        $expiration = filetimeVersTimestamp(attr($e, 'accountexpires'));
+        $mdpNonModifiable = mdpNonModifiable(attr($e, 'ntsecuritydescriptor'), $uac);
         $utilisateurs[$dn] = [
             'id'          => 'u' . count($utilisateurs),
             'login'       => attr($e, 'samaccountname'),
             'chemin'      => cheminAD($e['dn']),
             'nom'         => attr($e, 'displayname'),
             'actif'       => !($uac & 2),                 // ACCOUNTDISABLE
-            'mdpExpire'   => (bool) ($uac & 65536),       // DONT_EXPIRE_PASSWORD
+            'mdpNExpireJamais' => (bool) ($uac & 65536),  // DONT_EXPIRE_PASSWORD
+            'mdpNonModifiable' => $mdpNonModifiable,
+            'verrouille'  => $verrouille,
+            'verrouilleLe' => $verrouille ? filetimeVersTimestamp(attr($e, 'lockouttime')) : null,
+            'expiration'  => $expiration,                 // null = n'expire jamais
             'logon'       => maxTs(filetimeVersTimestamp(attr($e, 'lastlogontimestamp')),
                                    filetimeVersTimestamp(attr($e, 'lastlogon'))),
             'mdp'         => filetimeVersTimestamp(attr($e, 'pwdlastset')),
@@ -315,6 +373,12 @@ function adChargerComptes($ds) {
                 ['Mobile', attr($e, 'mobile')],
                 ['Description', attr($e, 'description')],
                 ['Bureau', attr($e, 'physicaldeliveryofficename')],
+                ['Compte désactivé', ouiNon($uac & 2)],
+                ['Expiration du compte', $expiration === null ? 'Jamais' : formatDate($expiration)],
+                ['Doit changer le mot de passe', ouiNon(attr($e, 'pwdlastset') === '0')],
+                ['Ne peut pas changer le mot de passe', ouiNon($mdpNonModifiable)],
+                ['Mot de passe n\'expire jamais', ouiNon($uac & 65536)],
+                ['Compte verrouillé', ouiNon($verrouille)],
             ],
             'perso'       => champsPerso($e),
         ];
