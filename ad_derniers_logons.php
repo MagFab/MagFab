@@ -20,11 +20,22 @@ const SEUIL_MDP_JOURS = 365;       // mot de passe plus ancien -> alerte
 // lastLogon est conserve en UTC dans l'AD : on l'affiche en heure de Paris
 date_default_timezone_set('Europe/Paris');
 
-// Lecture d'un parametre : $_ENV (fichier .env charge par db.php), sinon getenv()
+// Lecture d'un parametre : $_ENV (fichier .env charge par db.php),
+// sinon $_SERVER (SetEnv Apache, variables FastCGI IIS), sinon getenv()
 function parametre($nom, $defaut = '') {
     if (!empty($_ENV[$nom])) return $_ENV[$nom];
+    if (!empty($_SERVER[$nom])) return $_SERVER[$nom];
     $v = getenv($nom);
     return ($v !== false && $v !== '') ? $v : $defaut;
+}
+
+// Pour le diagnostic : ou PHP trouve-t-il une variable ?
+function origineParametre($nom) {
+    $origines = [];
+    if (!empty($_ENV[$nom])) $origines[] = '$_ENV';
+    if (!empty($_SERVER[$nom])) $origines[] = '$_SERVER';
+    if (getenv($nom) !== false && getenv($nom) !== '') $origines[] = 'getenv()';
+    return $origines ? implode(', ', $origines) : 'introuvable';
 }
 
 $ldapHost = parametre('LDAP_HOST');
@@ -43,8 +54,22 @@ foreach (['LDAP_HOST' => $ldapHost, 'LDAP_USER' => $ldapUser, 'LDAP_PASSWORD' =>
 }
 if ($manquants) {
     http_response_code(500);
-    die("Parametre(s) LDAP non defini(s) : " . implode(', ', $manquants)
-        . ". A ajouter au meme endroit que DB_HOST, DB_USERNAME... (fichier .env de l'intranet).");
+    // Fichiers .env presents autour de la page, pour savoir lequel est lu
+    $fichiersEnv = [];
+    foreach ([__DIR__, dirname(__DIR__), dirname(__DIR__, 2)] as $dossier) {
+        if (is_file($dossier . DIRECTORY_SEPARATOR . '.env')) {
+            $f = realpath($dossier . DIRECTORY_SEPARATOR . '.env');
+            $contenu = (string) @file_get_contents($f);
+            $fichiersEnv[] = $f . (preg_match('/^\s*LDAP_HOST\s*=/m', $contenu)
+                ? ' (contient LDAP_HOST)' : ' (ne contient PAS LDAP_HOST)');
+        }
+    }
+    die("<pre>Parametre(s) LDAP non defini(s) : " . implode(', ', $manquants) . "\n\n"
+        . "Diagnostic :\n"
+        . "  DB_HOST   trouve dans : " . origineParametre('DB_HOST') . "\n"
+        . "  LDAP_HOST trouve dans : " . origineParametre('LDAP_HOST') . "\n"
+        . "  Fichier(s) .env : " . ($fichiersEnv ? htmlspecialchars(implode(' | ', $fichiersEnv)) : 'aucun trouve') . "\n"
+        . "</pre>");
 }
 
 // Message de la derniere erreur de connexion, pour l'affichage
