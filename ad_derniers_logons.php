@@ -123,9 +123,14 @@ function attr($entree, $nom) {
 
 // Integer8 AD (intervalles de 100 ns depuis le 01/01/1601 UTC) -> timestamp Unix
 // null si 0 (jamais) ou valeur "jamais d'expiration"
+// Calcul en flottant : un PHP 32 bits (frequent sous Windows) ne sait pas
+// manipuler ces entiers sur 64 bits, (int) les ramenerait a 0 ou a 2147483647.
 function filetimeVersTimestamp($v) {
-    if ($v === '' || $v === '0' || $v === '9223372036854775807') return null;
-    return intdiv((int) $v, 10000000) - 11644473600;
+    $v = trim((string) $v);
+    if ($v === '' || $v === '0' || $v === '9223372036854775807' || !ctype_digit($v)) return null;
+    $ts = (float) $v / 10000000 - 11644473600;
+    if ($ts <= 0) return null;
+    return (int) floor($ts);
 }
 
 function formatDate($ts) {
