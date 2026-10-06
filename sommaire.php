@@ -129,6 +129,7 @@ include_once '../error/errorHandler.php';
             <li><a href="gestion_actualite.php">Gestion Actualité</a></li>
             <li><a href="rib_partis.php">RIB CLient Partis</a></li>
             <li><a href="ad_derniers_logons.php">Derniers logons AD (utilisateurs / ordinateurs)</a></li>
+            <li><a href="ad_groupes.php">Groupes AD et leurs membres</a></li>
         </ul>
     </li>
     <li><a href="formulaire_connexion.php">Connexion</a></li>
