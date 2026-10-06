@@ -20,23 +20,53 @@ const SEUIL_MDP_JOURS = 365;       // mot de passe plus ancien -> alerte
 // lastLogon est conserve en UTC dans l'AD : on l'affiche en heure de Paris
 date_default_timezone_set('Europe/Paris');
 
-$ldapHost = $_ENV['LDAP_HOST'] ?? '';
-$ldapUser = $_ENV['LDAP_USER'] ?? '';
-$ldapPass = $_ENV['LDAP_PASSWORD'] ?? '';
-$baseDn   = $_ENV['LDAP_BASE_DN'] ?? 'DC=acebesancon,DC=lan';
+// Lecture d'un parametre : $_ENV (fichier .env charge par db.php), sinon getenv()
+function parametre($nom, $defaut = '') {
+    if (!empty($_ENV[$nom])) return $_ENV[$nom];
+    $v = getenv($nom);
+    return ($v !== false && $v !== '') ? $v : $defaut;
+}
+
+$ldapHost = parametre('LDAP_HOST');
+$ldapUser = parametre('LDAP_USER');
+$ldapPass = parametre('LDAP_PASSWORD');
+$baseDn   = parametre('LDAP_BASE_DN', 'DC=acebesancon,DC=lan');
 
 if (!function_exists('ldap_connect')) {
     http_response_code(500);
     die("L'extension PHP ldap n'est pas activee sur le serveur.");
 }
 
+$manquants = [];
+foreach (['LDAP_HOST' => $ldapHost, 'LDAP_USER' => $ldapUser, 'LDAP_PASSWORD' => $ldapPass] as $nom => $valeur) {
+    if ($valeur === '') $manquants[] = $nom;
+}
+if ($manquants) {
+    http_response_code(500);
+    die("Parametre(s) LDAP non defini(s) : " . implode(', ', $manquants)
+        . ". A ajouter au meme endroit que DB_HOST, DB_USERNAME... (fichier .env de l'intranet).");
+}
+
+// Message de la derniere erreur de connexion, pour l'affichage
+$derniereErreurLdap = '';
+
 function ldapConnexion($uri, $user, $pass) {
+    global $derniereErreurLdap;
     $ds = @ldap_connect($uri);
-    if (!$ds) return false;
+    if (!$ds) {
+        $derniereErreurLdap = "adresse invalide (attendu : ldap://serveur ou ldaps://serveur)";
+        return false;
+    }
     ldap_set_option($ds, LDAP_OPT_PROTOCOL_VERSION, 3);
     ldap_set_option($ds, LDAP_OPT_REFERRALS, 0);
     ldap_set_option($ds, LDAP_OPT_NETWORK_TIMEOUT, 3);
-    if (!@ldap_bind($ds, $user, $pass)) return false;
+    if (!@ldap_bind($ds, $user, $pass)) {
+        $derniereErreurLdap = ldap_error($ds);
+        if (@ldap_get_option($ds, LDAP_OPT_DIAGNOSTIC_MESSAGE, $diag) && $diag) {
+            $derniereErreurLdap .= ' - ' . $diag;
+        }
+        return false;
+    }
     return $ds;
 }
 
@@ -111,7 +141,8 @@ function classeAnciennete($jours, $seuilAlerte, $seuilAttention = null) {
 $ds = ldapConnexion($ldapHost, $ldapUser, $ldapPass);
 if (!$ds) {
     http_response_code(500);
-    die("Erreur de connexion a l'Active Directory (" . htmlspecialchars($ldapHost) . ").");
+    die("Erreur de connexion a l'Active Directory (" . htmlspecialchars($ldapHost) . ") : "
+        . htmlspecialchars($derniereErreurLdap));
 }
 
 $filtreUsers = '(&(objectCategory=person)(objectClass=user))';
