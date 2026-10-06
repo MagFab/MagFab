@@ -92,6 +92,22 @@ function ldapConnexion($uri, $user, $pass) {
         $derniereErreurLdap = ldap_error($ds);
         if (@ldap_get_option($ds, LDAP_OPT_DIAGNOSTIC_MESSAGE, $diag) && $diag) {
             $derniereErreurLdap .= ' - ' . $diag;
+            // Code "data xxx" renvoye par Active Directory : cause precise du refus
+            $causes = [
+                '525' => "compte introuvable (verifier LDAP_USER : compte@acebesancon.lan ou ACEBESANCON\\compte)",
+                '52e' => "mot de passe incorrect (verifier LDAP_PASSWORD, et les guillemets dans le .env)",
+                '52f' => "restriction sur le compte : groupe Protected Users, carte a puce obligatoire, ou mot de passe vide",
+                '530' => "connexion interdite a cette heure (horaires d'acces du compte)",
+                '531' => "connexion interdite depuis ce poste (onglet Compte > Se connecter a...)",
+                '532' => "mot de passe expire",
+                '533' => "compte desactive",
+                '701' => "compte expire",
+                '773' => "l'utilisateur doit changer son mot de passe a la prochaine ouverture de session",
+                '775' => "compte verrouille",
+            ];
+            if (preg_match('/data ([0-9a-f]{3}),/i', $diag, $m) && isset($causes[strtolower($m[1])])) {
+                $derniereErreurLdap .= "\n\nCause : " . $causes[strtolower($m[1])];
+            }
         }
         return false;
     }
@@ -105,7 +121,7 @@ function adConnexionPrincipale() {
     if (!$ds) {
         http_response_code(500);
         die("Erreur de connexion a l'Active Directory (" . htmlspecialchars($ldapHost) . ") : "
-            . htmlspecialchars($derniereErreurLdap));
+            . nl2br(htmlspecialchars($derniereErreurLdap)));
     }
     return $ds;
 }
