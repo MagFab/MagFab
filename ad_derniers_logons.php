@@ -17,6 +17,9 @@ const SEUIL_INACTIF_JOURS = 90;    // logon plus ancien -> alerte
 const SEUIL_ATTENTION_JOURS = 30;  // logon plus ancien -> attention
 const SEUIL_MDP_JOURS = 365;       // mot de passe plus ancien -> alerte
 
+// Attributs personnalises affiches dans le detail d'un objet (noms en minuscules)
+const ATTRIBUTS_PERSO = ['azuser', 'azserv'];
+
 // lastLogon est conserve en UTC dans l'AD : on l'affiche en heure de Paris
 date_default_timezone_set('Europe/Paris');
 
@@ -121,25 +124,84 @@ function attr($entree, $nom) {
     return isset($entree[$nom][0]) ? $entree[$nom][0] : '';
 }
 
+// Attribut multi-valeurs -> tableau
+function attrMulti($entree, $nom) {
+    $valeurs = [];
+    if (isset($entree[$nom]['count'])) {
+        for ($i = 0; $i < $entree[$nom]['count']; $i++) $valeurs[] = $entree[$nom][$i];
+    }
+    return $valeurs;
+}
+
+// whenCreated / whenChanged : "20240115103000.0Z" (UTC) -> timestamp Unix
+function generalizedTimeVersTimestamp($v) {
+    if (!preg_match('/^(\d{14})/', (string) $v, $m)) return null;
+    $d = DateTime::createFromFormat('YmdHis', $m[1], new DateTimeZone('UTC'));
+    return $d ? $d->getTimestamp() : null;
+}
+
+// Nom d'un objet a partir de son DN : "CN=Compta,OU=Groupes,DC=..." -> "Compta"
+function nomDepuisDn($dn) {
+    $rdns = decouperDn($dn);
+    return $rdns ? $rdns[0][1] : $dn;
+}
+
+// Groupes d'un objet : memberOf (groupes directs) + groupe principal
+// (le groupe principal, ex. "Utilisateurs du domaine", n'apparait pas dans memberOf)
+function groupesObjet($entree) {
+    $groupes = [];
+    foreach (attrMulti($entree, 'memberof') as $dnGroupe) {
+        $groupes[] = [nomDepuisDn($dnGroupe), cheminAD($dnGroupe)];
+    }
+    $principaux = [
+        '513' => 'Utilisateurs du domaine', '514' => 'Invités du domaine',
+        '515' => 'Ordinateurs du domaine', '516' => 'Contrôleurs de domaine',
+        '521' => 'Contrôleurs de domaine en lecture seule',
+    ];
+    $rid = attr($entree, 'primarygroupid');
+    if ($rid !== '') {
+        $groupes[] = [($principaux[$rid] ?? 'Groupe RID ' . $rid) . ' (groupe principal)', ''];
+    }
+    usort($groupes, function ($a, $b) { return strcasecmp($a[0], $b[0]); });
+    return $groupes;
+}
+
+// Valeurs des attributs personnalises (ATTRIBUTS_PERSO)
+function champsPerso($entree) {
+    $champs = [];
+    foreach (ATTRIBUTS_PERSO as $nom) {
+        $champs[] = [$nom, implode(' | ', attrMulti($entree, $nom))];
+    }
+    return $champs;
+}
+
 // distinguishedName -> chemin complet facon "Utilisateurs et ordinateurs AD"
 // CN=Jean Dupont,OU=Compta,OU=Cabinet,DC=acebesancon,DC=lan
 //   -> acebesancon.lan/Cabinet/Compta/Jean Dupont
 function cheminAD($dn) {
     $domaine = [];
     $chemin = [];
+    foreach (decouperDn($dn) as $rdn) {
+        if ($rdn[0] === 'DC') $domaine[] = $rdn[1];
+        else $chemin[] = $rdn[1];
+    }
+    return implode('/', array_merge([implode('.', $domaine)], array_reverse($chemin)));
+}
+
+// DN -> liste de [type, valeur] : [['CN','Jean Dupont'], ['OU','Compta'], ['DC','acebesancon'], ...]
+function decouperDn($dn) {
+    $rdns = [];
     // decoupe sur les virgules non echappees
     foreach (preg_split('/(?<!\\\\),/', $dn) as $rdn) {
         $pos = strpos($rdn, '=');
         if ($pos === false) continue;
-        $type = strtoupper(trim(substr($rdn, 0, $pos)));
         // retire les echappements LDAP : "\," -> ","  et  "\2C" -> ","
         $valeur = preg_replace_callback('/\\\\([0-9A-Fa-f]{2}|.)/', function ($m) {
             return strlen($m[1]) === 2 ? chr(hexdec($m[1])) : $m[1];
         }, substr($rdn, $pos + 1));
-        if ($type === 'DC') $domaine[] = $valeur;
-        else $chemin[] = $valeur;
+        $rdns[] = [strtoupper(trim(substr($rdn, 0, $pos))), $valeur];
     }
-    return implode('/', array_merge([implode('.', $domaine)], array_reverse($chemin)));
+    return $rdns;
 }
 
 // Integer8 AD (intervalles de 100 ns depuis le 01/01/1601 UTC) -> timestamp Unix
@@ -204,7 +266,9 @@ $filtreOrdis = '(objectCategory=computer)';
 // ------------------------------------------------------------
 $utilisateurs = [];
 foreach (ldapRechercheTout($ds, $baseDn, $filtreUsers,
-        ['samaccountname', 'displayname', 'useraccountcontrol', 'lastlogontimestamp', 'lastlogon', 'pwdlastset', 'whencreated']) as $e) {
+        array_merge(['samaccountname', 'displayname', 'useraccountcontrol', 'lastlogontimestamp', 'lastlogon', 'pwdlastset',
+                     'sn', 'givenname', 'mail', 'telephonenumber', 'mobile', 'description', 'physicaldeliveryofficename',
+                     'memberof', 'primarygroupid', 'whencreated', 'whenchanged'], ATTRIBUTS_PERSO)) as $e) {
     $dn = strtolower($e['dn']);
     $uac = (int) attr($e, 'useraccountcontrol');
     $utilisateurs[$dn] = [
@@ -217,12 +281,28 @@ foreach (ldapRechercheTout($ds, $baseDn, $filtreUsers,
                              filetimeVersTimestamp(attr($e, 'lastlogon'))),
         'mdp'       => filetimeVersTimestamp(attr($e, 'pwdlastset')),
         'mdpAChanger' => attr($e, 'pwdlastset') === '0',
+        'id'        => 'u' . count($utilisateurs),
+        'cree'      => generalizedTimeVersTimestamp(attr($e, 'whencreated')),
+        'modifie'   => generalizedTimeVersTimestamp(attr($e, 'whenchanged')),
+        'groupes'   => groupesObjet($e),
+        'champs'    => [
+            ['Login', attr($e, 'samaccountname')],
+            ['Nom', attr($e, 'sn')],
+            ['Prénom', attr($e, 'givenname')],
+            ['Email', attr($e, 'mail')],
+            ['Téléphone', attr($e, 'telephonenumber')],
+            ['Mobile', attr($e, 'mobile')],
+            ['Description', attr($e, 'description')],
+            ['Bureau', attr($e, 'physicaldeliveryofficename')],
+        ],
+        'perso'     => champsPerso($e),
     ];
 }
 
 $ordinateurs = [];
 foreach (ldapRechercheTout($ds, $baseDn, $filtreOrdis,
-        ['name', 'operatingsystem', 'operatingsystemversion', 'useraccountcontrol', 'lastlogontimestamp', 'lastlogon', 'pwdlastset']) as $e) {
+        array_merge(['name', 'operatingsystem', 'operatingsystemversion', 'useraccountcontrol', 'lastlogontimestamp', 'lastlogon', 'pwdlastset',
+                     'dnshostname', 'description', 'location', 'memberof', 'primarygroupid', 'whencreated', 'whenchanged'], ATTRIBUTS_PERSO)) as $e) {
     $dn = strtolower($e['dn']);
     $uac = (int) attr($e, 'useraccountcontrol');
     $ordinateurs[$dn] = [
@@ -234,6 +314,18 @@ foreach (ldapRechercheTout($ds, $baseDn, $filtreOrdis,
         'logon'  => maxTs(filetimeVersTimestamp(attr($e, 'lastlogontimestamp')),
                           filetimeVersTimestamp(attr($e, 'lastlogon'))),
         'mdp'    => filetimeVersTimestamp(attr($e, 'pwdlastset')),
+        'id'      => 'o' . count($ordinateurs),
+        'cree'    => generalizedTimeVersTimestamp(attr($e, 'whencreated')),
+        'modifie' => generalizedTimeVersTimestamp(attr($e, 'whenchanged')),
+        'groupes' => groupesObjet($e),
+        'champs'  => [
+            ['Nom', attr($e, 'name')],
+            ['Nom DNS', attr($e, 'dnshostname')],
+            ['Système', trim(attr($e, 'operatingsystem') . ' ' . attr($e, 'operatingsystemversion'))],
+            ['Description', attr($e, 'description')],
+            ['Emplacement', attr($e, 'location')],
+        ],
+        'perso'   => champsPerso($e),
     ];
 }
 
@@ -332,6 +424,29 @@ if (isset($_GET['export']) && in_array($_GET['export'], ['utilisateurs', 'ordina
     exit;
 }
 
+// ------------------------------------------------------------
+// Details de chaque objet, affiches au clic sur une ligne
+// ------------------------------------------------------------
+$details = [];
+foreach ([$utilisateurs, $ordinateurs] as $liste) {
+    foreach ($liste as $obj) {
+        $titre = isset($obj['login'])
+            ? trim($obj['nom'] . ' (' . $obj['login'] . ')')
+            : $obj['nom'];
+        $details[$obj['id']] = [
+            'titre'   => $titre,
+            'champs'  => array_merge($obj['champs'], [
+                ['Chemin AD', $obj['chemin']],
+                ['Dernière connexion', $obj['logon'] === null ? 'Jamais' : formatDate($obj['logon'])],
+                ['Création de l\'objet', formatDate($obj['cree'])],
+                ['Modification de l\'objet', formatDate($obj['modifie'])],
+            ]),
+            'perso'   => $obj['perso'],
+            'groupes' => $obj['groupes'],
+        ];
+    }
+}
+
 include 'sommaire.php';
 
 $nbUsersInactifs = 0;
@@ -377,6 +492,51 @@ foreach ($ordinateurs as $o) {
     table.sortable th.tri-desc::after { content: " \25BC"; font-size: 10px; }
     td.num, th.num { text-align: right; }
     td.chemin { color: #666; font-size: 12px; }
+    tr.ligne-objet { cursor: pointer; }
+    tr.ligne-objet:hover td { background: #f0f4fa; }
+
+    /* Fenetre de detail */
+    .fond-detail {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.4);
+        z-index: 1000;
+        align-items: flex-start;
+        justify-content: center;
+        overflow-y: auto;
+        padding: 40px 16px;
+    }
+    .fond-detail.ouvert { display: flex; }
+    .fenetre-detail {
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+        width: 100%;
+        max-width: 720px;
+        padding: 20px 24px;
+        box-sizing: border-box;
+    }
+    .fenetre-detail .entete { margin-bottom: 8px; }
+    .fenetre-detail h3 { font-size: 13px; color: #666; margin: 18px 0 6px 0; text-transform: uppercase; }
+    .fenetre-detail table td { font-size: 13px; vertical-align: top; }
+    .fenetre-detail table td:first-child { color: #666; width: 200px; white-space: nowrap; }
+    .fenetre-detail .vide { color: #bbb; }
+    .fenetre-detail ul { margin: 0; padding-left: 18px; font-size: 13px; columns: 2; }
+    .fenetre-detail li { margin-bottom: 3px; break-inside: avoid; }
+    .bouton-fermer {
+        background: #eee;
+        border: none;
+        border-radius: 5px;
+        padding: 6px 12px;
+        font-size: 13px;
+        cursor: pointer;
+    }
+    .bouton-fermer:hover { background: #ddd; }
+    @media (max-width: 600px) {
+        .fenetre-detail ul { columns: 1; }
+        .fenetre-detail table td:first-child { width: auto; white-space: normal; }
+    }
     td.ok { color: #1d6f42; }
     td.attention { color: #b36b00; font-weight: 600; }
     td.alerte { color: #c0392b; font-weight: 600; }
@@ -470,7 +630,7 @@ foreach ($ordinateurs as $o) {
             $jMdp = joursDepuis($u['mdp']);
             $clsMdp = ($u['mdpAChanger'] || $u['mdpExpire']) ? 'attention' : classeAnciennete($jMdp, SEUIL_MDP_JOURS);
         ?>
-            <tr class="<?php echo $u['actif'] ? '' : 'desactive'; ?>">
+            <tr class="ligne-objet <?php echo $u['actif'] ? '' : 'desactive'; ?>" data-id="<?php echo $u['id']; ?>">
                 <td><?php echo htmlspecialchars($u['login']); ?></td>
                 <td><?php echo htmlspecialchars($u['nom']); ?></td>
                 <td><?php echo $u['actif'] ? 'Actif' : '<span class="badge">Désactivé</span>'; ?></td>
@@ -517,7 +677,7 @@ foreach ($ordinateurs as $o) {
         <?php foreach ($ordinateurs as $o):
             $jLogon = joursDepuis($o['logon']);
         ?>
-            <tr class="<?php echo $o['actif'] ? '' : 'desactive'; ?>">
+            <tr class="ligne-objet <?php echo $o['actif'] ? '' : 'desactive'; ?>" data-id="<?php echo $o['id']; ?>">
                 <td>
                     <?php echo htmlspecialchars($o['nom']); ?>
                     <?php if ($o['dc']): ?><span class="badge dc">DC</span><?php endif; ?>
@@ -535,7 +695,83 @@ foreach ($ordinateurs as $o) {
     </table>
 </div>
 
+<div class="fond-detail" id="fond-detail">
+    <div class="fenetre-detail" role="dialog" aria-modal="true">
+        <div class="entete">
+            <h2 id="detail-titre"></h2>
+            <button type="button" class="bouton-fermer" id="detail-fermer">Fermer</button>
+        </div>
+        <table id="detail-champs"></table>
+        <h3>Attributs personnalisés</h3>
+        <table id="detail-perso"></table>
+        <h3 id="detail-titre-groupes">Groupes</h3>
+        <ul id="detail-groupes"></ul>
+    </div>
+</div>
+
 <script>
+// Details des objets AD (generes par PHP)
+var DETAILS_AD = <?php echo json_encode($details, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE); ?>;
+
+function remplirTableDetail(table, champs) {
+    table.innerHTML = '';
+    champs.forEach(function (c) {
+        var tr = document.createElement('tr');
+        var tdLibelle = document.createElement('td');
+        var tdValeur = document.createElement('td');
+        tdLibelle.textContent = c[0];
+        if (c[1] === '' || c[1] === null) {
+            tdValeur.textContent = '—';
+            tdValeur.className = 'vide';
+        } else {
+            tdValeur.textContent = c[1];
+        }
+        tr.appendChild(tdLibelle);
+        tr.appendChild(tdValeur);
+        table.appendChild(tr);
+    });
+}
+
+function ouvrirDetail(id) {
+    var d = DETAILS_AD[id];
+    if (!d) return;
+    document.getElementById('detail-titre').textContent = d.titre;
+    remplirTableDetail(document.getElementById('detail-champs'), d.champs);
+    remplirTableDetail(document.getElementById('detail-perso'), d.perso);
+
+    var ul = document.getElementById('detail-groupes');
+    ul.innerHTML = '';
+    document.getElementById('detail-titre-groupes').textContent = 'Groupes (' + d.groupes.length + ')';
+    d.groupes.forEach(function (g) {
+        var li = document.createElement('li');
+        li.textContent = g[0];
+        if (g[1]) li.title = g[1];   // chemin complet du groupe au survol
+        ul.appendChild(li);
+    });
+    if (d.groupes.length === 0) {
+        var li = document.createElement('li');
+        li.textContent = 'Aucun';
+        li.className = 'vide';
+        ul.appendChild(li);
+    }
+    document.getElementById('fond-detail').classList.add('ouvert');
+}
+
+function fermerDetail() {
+    document.getElementById('fond-detail').classList.remove('ouvert');
+}
+
+document.querySelectorAll('tr.ligne-objet').forEach(function (tr) {
+    tr.addEventListener('click', function () { ouvrirDetail(tr.getAttribute('data-id')); });
+});
+document.getElementById('detail-fermer').addEventListener('click', fermerDetail);
+document.getElementById('fond-detail').addEventListener('click', function (e) {
+    if (e.target === this) fermerDetail();   // clic en dehors de la fenetre
+});
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') fermerDetail();
+});
+
 // Tri des colonnes (meme principe que les autres pages de l'intranet)
 document.querySelectorAll('table.sortable').forEach(function (table) {
     var headers = table.querySelectorAll('thead th');
